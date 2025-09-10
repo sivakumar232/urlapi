@@ -38,21 +38,54 @@ userrouter.post("/login", async (req, res) => {
     res.status(500).json({ error: "Internal server error" });
   }
 });
-
 userrouter.post("/logout", (req, res) => {
   res.json({ message: "Logged out successfully" });
 });
+//auth middleware to check jwt or api key 
+const authmiddleware=async (req, res, next)=>{
+    const token = req.headers.authorization?.split(" ")[1];
+    const apikey= req.query.api_key;
 
-userrouter.get("/profile", async (req, res) => {
+    if(token){
+        try{
+            const decoded=jwt.verify(token,process.env.JWT_SECRET);
+            req.user= decoded;
+            return next();
+        }
+        catch(err){
+            return res.status(401).json({error:"Invalid or expired token"});
+        }
+    }
+
+    if(apikey){
+        const user= await User.findOne({apiKey:apikey});
+        if(!user){
+            res.json({message:"Invalid API Key"});
+        }
+        req.user=user;
+        return next();
+    }
+    else{
+        return res.status(401).json({error:"No token provided"});
+    }
+}
+
+
+//http://localhost:3000/api/user/preview?api_key=qup08fu19n example for profile fetching using api key
+
+userrouter.get("/profile", authmiddleware,async (req, res) => {
   try {
-    const token = req.headers.authorization;
-    if (!token) return res.status(401).json({ message: "No token provided" });
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await User.findById(decoded.id).select("-password");
+    const user = req.user;
     if (!user) return res.status(404).json({ message: "User not found" });
-    res.json(user);
+    res.json({
+        username: user.username,
+        email: user.email,
+        apikey: user.apiKey,
+        requestMade: user.requestsMade,
+        requestLimit: user.requestLimit
+    });
   } catch (err) {
-    res.status(401).json({ error: "Invalid or expired token" });
+    res.status(401).json({ error:"Internal Server Error" });
   }
 });
 
@@ -68,9 +101,14 @@ userrouter.put("/updateprofile", async (req, res) => {
   }
 });
 
-userrouter.post("/previewurl", async (req, res) => {
+
+
+userrouter.get("/previewurl",authmiddleware,async (req, res) => {
   try {
-    const { url } = req.body;
+    const { url } = req.query;
+    if(!url){
+        return res.status(400).json({error:"url is required"});
+    }
     const { data } = await axios.get(url);
     const $ = cheerio.load(data);
     const title = $("title").text();
@@ -78,7 +116,7 @@ userrouter.post("/previewurl", async (req, res) => {
     const image = $('meta[property="og:image"]').attr("content") || "";
     res.json({ title, description, image ,url});
   } catch (err) {
-    res.status(500).json({ error:   "Could not fetch preview" });
+    res.status(500).json({ error:   "Could not fetch url data" });
   }
 });
 
