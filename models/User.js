@@ -29,6 +29,10 @@ const userSchema = new mongoose.Schema({
     type: Number,
     default: 100, 
   },
+  lastRequestAt: { 
+    type: Date,
+     default: Date.now
+  },
   createdAt: {
     type: Date,
     default: Date.now,

@@ -101,15 +101,45 @@ userrouter.put("/updateprofile", async (req, res) => {
   }
 });
 
+const requestlimitmiddleware= async (req,res,next) => {
+    try{
+        const user =req.user;
+        if(!user){
+            return res.status(401).json({error:"User not found"});
+        }
+        const now= new Date();
+        
+        const hourssincelastreq=(now-user.lastRequestAt)/3600000;
+
+        if(hourssincelastreq>=24){
+            user.requestsMade=0;
+            user.lastrequest=now;
+        }
+        if(user.requestsMade>=user.requestLimit){
+            return res.status(429).json({error:"Request limit exceeded"});
+        }
+        user.requestsMade++;
+            await user.save();
+        next();
+
+    }
+    catch(err){
+        res.status(500).json({error:"Internal Server Error"});
+    }
 
 
-userrouter.get("/previewurl",authmiddleware,async (req, res) => {
+}
+
+//http://localhost:3000/api/user/previewurl?api_key=qup08fu19n&url=https://my.linkpreview.net/ example for profile fetching using api key
+
+userrouter.get("/previewurl",authmiddleware,requestlimitmiddleware,async (req, res) => {
   try {
     const { url } = req.query;
     if(!url){
         return res.status(400).json({error:"url is required"});
     }
     const { data } = await axios.get(url);
+
     const $ = cheerio.load(data);
     const title = $("title").text();
     const description = $('meta[name="description"]').attr("content") || "";
