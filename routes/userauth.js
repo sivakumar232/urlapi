@@ -5,6 +5,7 @@ const jwt = require("jsonwebtoken");
 const axios = require("axios");
 const cheerio = require("cheerio");
 const User = require("../models/User");
+const Preview = require("../models/Preview");
 
 userrouter.post("/register", async (req, res) => {
   try {
@@ -145,9 +146,57 @@ userrouter.get("/previewurl",authmiddleware,requestlimitmiddleware,async (req, r
     const description = $('meta[name="description"]').attr("content") || "";
     const image = $('meta[property="og:image"]').attr("content") || "";
     res.json({ title, description, image ,url});
+    await Preview.create({ userId: req.user.id, url, title, description, image });
+
   } catch (err) {
     res.status(500).json({ error:   "Could not fetch url data" });
   }
 });
+userrouter.post("/regenerate-apikey", authmiddleware, async (req, res) => {
+  try {
+    const newKey = Math.random().toString(36).slice(2);
+    const updatedUser = await User.findByIdAndUpdate(
+      req.user.id,
+      { apiKey: newKey },
+      { new: true }
+    ).select("-password");
+    res.json({ message: "API key regenerated successfully", apiKey: newKey });
+  } catch (err) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+userrouter.get("/stats", authmiddleware, async (req, res) => {
+  try {
+    const user = req.user;
+    res.json({
+      username: user.username,
+      totalRequests: user.requestsMade,
+      remainingRequests: user.requestLimit - user.requestsMade,
+      lastRequestAt: user.lastRequestAt,
+    });
+  } catch (err) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+
+userrouter.get("/history", authmiddleware, async (req, res) => {
+  try {
+    const previews = await Preview.find({ userId: req.user.id }).sort({ fetchedAt: -1 });
+    res.json(previews);
+  } catch (err) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+userrouter.delete("/delete", authmiddleware, async (req, res) => {
+  try {
+    await User.findByIdAndDelete(req.user.id);
+    res.json({ message: "Account deleted successfully" });
+  } catch (err) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 
 module.exports = userrouter;
