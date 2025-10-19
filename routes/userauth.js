@@ -10,62 +10,92 @@ const Preview = require("../models/Preview");
 userrouter.post("/register", async (req, res) => {
   try {
     const { username, email, password } = req.body;
+
+    // Check if user already exists
     const existingUser = await User.findOne({ email });
-    if (existingUser) return res.status(400).json({ message: "User already exists" });
+    if (existingUser) 
+      return res.status(400).json({ message: "User already exists" });
+
+    // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Generate unique API key (timestamp + random)
+    const apiKey = Math.random().toString(36).slice(2) + Date.now().toString(36);
+
+    // Create new user
     const newUser = new User({
-      username,
+      username, 
       email,
       password: hashedPassword,
-      apiKey: Math.random().toString(36).slice(2),
+      apiKey,
+      requestLimit: 50,  // optional default limit
+      requestsMade: 0,
+      lastRequestAt: new Date(),
     });
+
     await newUser.save();
-    res.json({ message: "User registered successfully" });
+    res.status(201).json({ message: "User registered successfully" });
   } catch (err) {
+    console.error(err); // log the real error
     res.status(500).json({ error: "Internal server error" });
   }
 });
+
 
 userrouter.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body;
     const existingUser = await User.findOne({ email });
-    if (!existingUser) return res.status(400).json({ message: "User not found" });
+    if (!existingUser) return res.status(401).json({ message: "Invalid credentials" });
+
     const validPassword = await bcrypt.compare(password, existingUser.password);
-    if (!validPassword) return res.status(400).json({ message: "Invalid credentials" });
-    const token = jwt.sign({ id: existingUser._id }, process.env.JWT_SECRET, { expiresIn: "1h" });
-    res.json({ message: "Login successful", token });
-  } catch (err) {   
+    if (!validPassword) return res.status(401).json({ message: "Invalid credentials" });
+
+    const token = jwt.sign(
+      { id: existingUser._id, email: existingUser.email },
+      process.env.JWT_SECRET,
+      { expiresIn: "1h" }
+    );
+
+    res.json({
+      message: "Login successful",
+      token,
+      user: {
+        username: existingUser.username,
+        email: existingUser.email,
+        apiKey: existingUser.apiKey,
+      },
+    });
+  } catch (err) {
+    console.error(err);
     res.status(500).json({ error: "Internal server error" });
   }
-});
-userrouter.post("/logout", (req, res) => {
-  res.json({ message: "Logged out successfully" });
 });
 //auth middleware to check jwt or api key 
 const authmiddleware=async (req, res, next)=>{
     const token = req.headers.authorization?.split(" ")[1];
     const apikey= req.query.api_key;
-
-    if(token){
-        try{
-            const decoded=jwt.verify(token,process.env.JWT_SECRET);
-            req.user= decoded;
-            return next();
-        }
-        catch(err){
-            return res.status(401).json({error:"Invalid or expired token"});
-        }
-    }
-
-    if(apikey){
-        const user= await User.findOne({apiKey:apikey});
-        if(!user){
-            res.json({message:"Invalid API Key"});
-        }
-        req.user=user;
+if(token){
+    try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        const user = await User.findById(decoded.id); // get full user document
+        if(!user) return res.status(401).json({error:"User not found"});
+        req.user = user;
         return next();
+    } catch(err) {
+        return res.status(401).json({error:"Invalid or expired token"});
     }
+}
+
+if(apikey){
+    const user = await User.findOne({ apiKey });
+    if(!user){
+        return res.status(401).json({message:"Invalid API Key"});
+    }
+    req.user = user;
+    return next();
+}
+
     else{
         return res.status(401).json({error:"No token provided"});
     }
@@ -112,10 +142,11 @@ const requestlimitmiddleware= async (req,res,next) => {
         
         const hourssincelastreq=(now-user.lastRequestAt)/3600000;
 
-        if(hourssincelastreq>=24){
-            user.requestsMade=0;
-            user.lastrequest=now;
-        }
+if(hourssincelastreq>=24){
+    user.requestsMade = 0;
+    user.lastRequestAt = now;
+}
+
         if(user.requestsMade>=user.requestLimit){
             return res.status(429).json({error:"Request limit exceeded"});
         }
@@ -133,25 +164,42 @@ const requestlimitmiddleware= async (req,res,next) => {
 
 //http://localhost:3000/api/user/previewurl?api_key=qup08fu19n&url=https://my.linkpreview.net/ example for profile fetching using api key
 
-userrouter.get("/previewurl",authmiddleware,requestlimitmiddleware,async (req, res) => {
+userrouter.get("/previewurl", authmiddleware, requestlimitmiddleware, async (req, res) => {
   try {
     const { url } = req.query;
-    if(!url){
-        return res.status(400).json({error:"url is required"});
+    if (!url) {
+      return res.status(400).json({ error: "url is required" });
     }
-    const { data } = await axios.get(url);
 
+    const { data } = await axios.get(url);
     const $ = cheerio.load(data);
-    const title = $("title").text();
+
+    const title = $("title").text() || "";
     const description = $('meta[name="description"]').attr("content") || "";
     const image = $('meta[property="og:image"]').attr("content") || "";
-    res.json({ title, description, image ,url});
-    await Preview.create({ userId: req.user.id, url, title, description, image });
+
+    // Save preview to DB
+    const preview = await Preview.create({
+      userId: req.user._id, // works for both JWT and API key auth
+      url,
+      title,
+      description,
+      image,
+    });
+
+    res.json({
+      title: preview.title,
+      description: preview.description,
+      image: preview.image,
+      url: preview.url,
+    });
 
   } catch (err) {
-    res.status(500).json({ error:   "Could not fetch url data" });
+    console.error("Preview fetch error:", err.message);
+    res.status(500).json({ error: "Could not fetch url data" });
   }
 });
+
 userrouter.post("/regenerate-apikey", authmiddleware, async (req, res) => {
   try {
     const newKey = Math.random().toString(36).slice(2);
